@@ -1,0 +1,21 @@
+{
+  "name": "allsender-restapp-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RestApp AI — módulo de restaurantes de AllSender: menú, mesas, pedidos, reservas y delivery con agente IA (motor CodeMorf).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CodeMorf/Allsender-RestApp-ai.git"
+  },
+  "keywords": [
+    "allsender",
+    "restapp",
+    "restaurante",
+    "reservas",
+    "mesas",
+    "delivery",
+    "ventas-ai",
+    "codemorf"
+  ]
+}

@@ -1,0 +1,24 @@
+# Secrets — nunca subir
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Backups y residuos
+*.bak
+*.bak-*
+*.ts.bak-*
+*.tar.gz
+*.zip
+*.log
+
+# Node / Next
+node_modules/
+.next/
+out/
+dist/
+
+# Sistema
+.DS_Store
+Thumbs.db
