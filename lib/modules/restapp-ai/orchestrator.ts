@@ -246,23 +246,33 @@ export async function runRestappTool(
     }
     case 'create_order_draft':
     case 'confirm_order': {
-      const order = await createRestappOrder({
-        teamId,
-        chatId: ctx.chatId || null,
-        branchId: args.branch_id != null ? Number(args.branch_id) : null,
-        modality: String(args.modality || 'dine_in'),
-        tableCode: (args.table_code as string) || null,
-        customerName: String(args.customer_name || ''),
-        customerPhone: String(args.customer_phone || ''),
-        customerAddress: (args.address as string) || (args.customer_address as string) || null,
-        customerLat: args.lat != null ? Number(args.lat) : null,
-        customerLng: args.lng != null ? Number(args.lng) : null,
-        paymentMethod: String(args.payment_method || 'cod'),
-        items: Array.isArray(args.items) ? (args.items as any) : [],
-        notes: (args.notes as string) || null,
-        deliveryFee: Number(args.delivery_fee || 0),
-        discount: Number(args.discount || 0),
-      });
+      let order;
+      try {
+        order = await createRestappOrder({
+          teamId,
+          chatId: ctx.chatId || null,
+          branchId: args.branch_id != null ? Number(args.branch_id) : null,
+          modality: String(args.modality || 'dine_in'),
+          tableCode: (args.table_code as string) || null,
+          customerName: String(args.customer_name || ''),
+          customerPhone: String(args.customer_phone || ''),
+          customerAddress: (args.address as string) || (args.customer_address as string) || null,
+          customerLat: args.lat != null ? Number(args.lat) : null,
+          customerLng: args.lng != null ? Number(args.lng) : null,
+          paymentMethod: String(args.payment_method || 'cod'),
+          items: Array.isArray(args.items) ? (args.items as any) : [],
+          notes: (args.notes as string) || null,
+          deliveryFee: Number(args.delivery_fee || 0),
+          discount: Number(args.discount || 0),
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          ok: false,
+          error: msg || 'invalid_order',
+          message: 'Revisa los argumentos: items debe ser un array con product_id/name/qty/unit_price, y customer_name + customer_phone son obligatorios.',
+        };
+      }
       return { ok: true, order, order_number: order?.order_number };
     }
     case 'get_order_status': {
@@ -287,6 +297,15 @@ export async function runRestappTool(
       return { ok: true, free_count: free.length, tables: free.slice(0, 20) };
     }
     case 'create_reservation': {
+      const at = String(args.reserved_at || new Date().toISOString());
+      const d = new Date(at);
+      if (Number.isNaN(d.getTime()) || d.getTime() < Date.now() - 10 * 60 * 1000) {
+        return {
+          ok: false,
+          error: 'invalid_reserved_at',
+          message: 'reserved_at debe ser una fecha/hora futura válida en formato ISO (YYYY-MM-DDTHH:mm:ss). Usa la fecha real actual (hoy) para fechas relativas.',
+        };
+      }
       const row = await createRestappReservation({
         teamId,
         chatId: ctx.chatId || null,
@@ -294,7 +313,7 @@ export async function runRestappTool(
         customerName: String(args.customer_name || ''),
         customerPhone: String(args.customer_phone || ''),
         partySize: Number(args.party_size || 2),
-        reservedAt: String(args.reserved_at || new Date().toISOString()),
+        reservedAt: at,
         tableCode: (args.table_code as string) || null,
         notes: (args.notes as string) || null,
       });

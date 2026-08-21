@@ -71,6 +71,33 @@ function descriptionFor(id: string, domain: string, action: string) {
   return `RestaPP ${HUMAN_LABELS[domain] || domain}: ${readable}. Ejecuta esta capacidad con datos reales del equipo; no inventes resultados.`;
 }
 
+// Guía de uso por tool crítica: el LLM elige mejor cuando la descripción dice
+// CUÁNDO usar la herramienta y qué requiere, en vez de solo el nombre.
+const DESCRIPTION_OVERRIDES: Partial<Record<RestappAgentToolId, string>> = {
+  'restapp.reservation.create':
+    'RestaPP reservas: crear una reserva para el cliente. Requiere reserved_at (fecha/hora futura en formato ISO YYYY-MM-DDTHH:mm:ss) y party_size. Interpreta "hoy/esta noche/mañana" usando la fecha y hora real actual.',
+  'restapp.reservation.status':
+    'RestaPP reservas: consultar el estado y los datos de una reserva existente por reservation_id. No la confundas con crear, confirmar o cancelar reservas.',
+  'restapp.reservation.special_requests':
+    'RestaPP reservas: registrar solicitudes especiales del cliente en una reserva existente (mesa cerca de la ventana, silla para bebé, cumpleaños, alergias, etc.). Requiere reservation_id y el texto de la solicitud en el parámetro requests (o note). Úsala cuando el cliente pida un detalle especial para su reserva; no la sustituyas por confirm o create.',
+  'restapp.reservation.reschedule':
+    'RestaPP reservas: reprogramar una reserva existente a otra fecha/hora. Requiere reservation_id y reserved_at (fecha/hora futura ISO). Interpreta fechas relativas con la fecha real actual.',
+  'restapp.order.confirm':
+    'RestaPP pedidos: confirmar el pedido del cliente. Requiere items=[{product_id, name, qty, unit_price}] con el contenido real del draft (de restapp.order.add_item) y customer_name + customer_phone del cliente.',
+  'restapp.order.status':
+    'RestaPP pedidos: consultar el estado de un pedido existente por order_id u order_number.',
+  'restapp.order.add_item':
+    'RestaPP pedidos: agregar un producto al carrito del pedido. Requiere product_id numérico válido del menú (consúltalo antes si no lo tienes); no inventes ids.',
+  'restapp.order.create_draft':
+    'RestaPP pedidos: crear o consultar el borrador de un PEDIDO de comida en curso (productos del menú). Úsala SOLO cuando el cliente esté armando o consultando un pedido de comida; NUNCA para confirmar una reserva, reprogramar, ni gestionar pagos.',
+  'restapp.payment.select':
+    'RestaPP pagos: registrar el método de pago elegido por el cliente (efectivo/transferencia/tarjeta) sobre un pedido existente. Acepta order_id (numérico) u order_number, y method o payment_method.',
+  'restapp.payment.status':
+    'RestaPP pagos: consultar el método y estado de pago de un pedido existente por order_id u order_number.',
+  'restapp.faq.search':
+    'RestaPP conocimiento: buscar en preguntas frecuentes/RAG del restaurante con una consulta (q). Úsala para horarios, políticas, alergias, contacto y dudas generales.',
+};
+
 export const RESTAPP_AGENT_TOOLS: readonly RestappAgentToolDefinition[] = IDS.map((id) => {
   const [, domain, ...rest] = id.split('.');
   const action = rest.join('_');
@@ -82,7 +109,7 @@ export const RESTAPP_AGENT_TOOLS: readonly RestappAgentToolDefinition[] = IDS.ma
     kind,
     visibility: ADMIN_DOMAINS.has(domain) ? 'admin' : 'llm',
     requiresConfirmation: kind === 'write' && !id.startsWith('restapp.handoff.'),
-    description: descriptionFor(id, domain, action),
+    description: DESCRIPTION_OVERRIDES[id] || descriptionFor(id, domain, action),
     parameters: defaultSchema(domain),
   };
 });
@@ -113,7 +140,7 @@ const DOMAIN_KEYWORDS: Array<[string, RegExp]> = [
   ['customer', /mi pedido anterior|favorito|puntos|cliente|historial|siempre pido/i],
   ['faq', /horario|parqueo|wifi|mascota|pet|alerg|pol[ií]tica|contacto|tel[eé]fono/i],
   ['branch', /sucursal|cerca|ubicaci[oó]n|direcci[oó]n|horario/i],
-  ['order', /pedido|orden|quiero|agrega|quita|cantidad|carrito|confirm|cancel/i],
+  ['order', /pedido|orden|quiero|agrega|quita|cantidad|carrito|cancel/i],
   ['recommend', /recom|sugier|qu[eé] me|no s[eé]|opci[oó]n|presupuesto|veget|vegano/i],
   ['menu', /men[uú]|plato|comida|precio|ingrediente|bebida|postre|foto|picante/i],
   ['handoff', /humano|persona|agente|encargado|gerente|queja|reclamo/i],
@@ -139,11 +166,20 @@ export function selectRestappAgentTools(input: {
   // Base domains make the agent resilient without exposing the whole catalog.
   for (const d of ['menu','order','faq','handoff']) scores.set(d, (scores.get(d) || 0) + 1);
 
+  // Desempate por prioridad de dominio en la fase: evita que un dominio con
+  // keywords ambiguas (p. ej. "cerca" → branch) desplace tools del dominio
+  // principal de la fase (p. ej. special_requests de reservas) por orden de índice.
+  const phaseDomains = PHASE_DOMAINS[phase];
+  const domainRank = (d: string) => {
+    const i = phaseDomains.indexOf(d);
+    return i === -1 ? phaseDomains.length : i;
+  };
+
   const tools = RESTAPP_AGENT_TOOLS
     .filter((t) => input.includeAdmin || t.visibility === 'llm')
-    .map((tool, index) => ({ tool, score: scores.get(tool.domain) || 0, index }))
+    .map((tool, index) => ({ tool, score: scores.get(tool.domain) || 0, rank: domainRank(tool.domain), index }))
     .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .sort((a, b) => b.score - a.score || a.rank - b.rank || a.index - b.index)
     .slice(0, maxTools)
     .map((x) => x.tool);
 

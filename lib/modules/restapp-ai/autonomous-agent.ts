@@ -68,11 +68,15 @@ function parseArgs(input: RestappLlmToolCall['arguments']): Record<string, unkno
 }
 
 function systemPrompt(phase: RestappConversationPhase) {
+  const now = new Date();
+  const fecha = now.toLocaleString('es-DO', { timeZone: 'America/Santo_Domingo', dateStyle: 'full', timeStyle: 'short' });
   return [
     'Eres el agente autónomo de RestaPP AI dentro de AllSender.',
     'RestaPP usa el motor IA, entrenamiento/RAG, canales y automatizaciones del equipo; no inventes proveedores paralelos.',
     'Usa herramientas para consultar o ejecutar acciones reales. Nunca afirmes que ejecutaste una acción si no hay resultado ok.',
     'No inventes precios, stock, horarios, disponibilidad, estados de pedidos, reservas, promociones ni datos del cliente.',
+    `Fecha y hora real actual: ${fecha}. Usa SIEMPRE esta fecha/hora real para calcular fechas relativas ("hoy", "esta noche", "mañana") en reservas, reprogramaciones, entregas o pagos; no inventes fechas.`,
+    'Antes de afirmar que una acción quedó hecha (reserva creada, solicitud especial registrada, pago elegido, pedido confirmado), verifica que la herramienta correspondiente devolvió ok en ESTE turno. Si no devolvió ok, no lo afirmes: ejecuta la herramienta correcta o di que no se pudo.',
     'Cuando necesites conocimiento entrenado del restaurante usa restapp__faq__search o una herramienta FAQ especializada; esa ruta consume el RAG del equipo mediante adapter.',
     'Las herramientas write marcadas con confirmación solo pueden ejecutarse después de confirmación explícita del cliente. El ejecutor también lo valida.',
     'Puedes encadenar varias herramientas durante el mismo turno. Las lecturas independientes pueden resolverse en paralelo; las escrituras se ejecutan secuencialmente.',

@@ -65,7 +65,6 @@ const LEGACY: Partial<Record<RestappAgentToolId, RestappToolName>> = {
   'restapp.table.check_availability': 'check_table_availability',
   'restapp.table.list_slots': 'list_available_slots',
   'restapp.reservation.create': 'create_reservation',
-  'restapp.faq.search': 'get_faqs',
   'restapp.promo.list': 'get_promotions',
   'restapp.handoff.request_human': 'request_human_handoff',
 };
@@ -79,6 +78,26 @@ function state(ctx: RestappAgentExecutionContext) { return (ctx.state ||= {}); }
 function cart(ctx: RestappAgentExecutionContext) { const st = state(ctx); return (st.restappCart ||= { items: [], notes: null, modality: 'dine_in' }); }
 function ok(data: Record<string, unknown> = {}) { return { ok: true, ...data }; }
 function fail(error: string, extra: Record<string, unknown> = {}) { return { ok: false, error, ...extra }; }
+
+/** Fecha/hora futura válida en formato ISO; rechaza pasados y años fuera de rango. */
+function validReservedAt(v: string): boolean {
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return false;
+  if (d.getTime() < Date.now() - 10 * 60 * 1000) return false;
+  const y = d.getFullYear();
+  return y >= new Date().getFullYear() - 1 && y <= new Date().getFullYear() + 2;
+}
+
+/** Resuelve el id numérico de un pedido desde order_id u order_number. */
+async function resolveOrderId(teamId: number, args: Record<string, unknown>): Promise<number> {
+  const id = n(args.order_id);
+  if (id) return id;
+  const num = s(args.order_number || args.orderNo);
+  if (!num) return 0;
+  const orders = await listRestappOrders(teamId, 100);
+  const o = orders.find((x) => String(x.order_number || '') === num);
+  return o ? Number(o.id) : 0;
+}
 
 async function rag(teamId: number, args: Record<string, unknown>, ctx: RestappAgentExecutionContext) {
   const q = s(args.q || args.query || args.question);
@@ -162,9 +181,9 @@ async function executeLocal(teamId: number, toolId: RestappAgentToolId, args: Re
     case 'restapp.reservation.status': { const rows=await listRestappReservations(teamId,100); const row=rows.find((x)=>Number(x.id)===n(args.reservation_id)); return row?ok({reservation:row}):fail('not_found'); }
     case 'restapp.reservation.confirm':
     case 'restapp.reservation.cancel': { const status=toolId.endsWith('confirm')?'confirmed':'cancelled'; const id=n(args.reservation_id); const r=await db.execute(sql`UPDATE restapp_reservations SET status=${status} WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
-    case 'restapp.reservation.reschedule': { const id=n(args.reservation_id), at=s(args.reserved_at); if(!id||!at)return fail('reservation_id_and_reserved_at_required'); const r=await db.execute(sql`UPDATE restapp_reservations SET reserved_at=${at} WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
+    case 'restapp.reservation.reschedule': { const id=n(args.reservation_id), at=s(args.reserved_at); if(!id||!at)return fail('reservation_id_and_reserved_at_required'); if(!validReservedAt(at))return fail('invalid_reserved_at',{message:'reserved_at debe ser una fecha/hora futura válida en formato ISO (YYYY-MM-DDTHH:mm:ss). Usa la fecha real actual (hoy) para fechas relativas.'}); const r=await db.execute(sql`UPDATE restapp_reservations SET reserved_at=${at} WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
     case 'restapp.reservation.party_size': { const id=n(args.reservation_id), size=Math.max(1,n(args.party_size,1)); const r=await db.execute(sql`UPDATE restapp_reservations SET party_size=${size} WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
-    case 'restapp.reservation.special_requests': { const id=n(args.reservation_id), note=s(args.requests||args.note); const r=await db.execute(sql`UPDATE restapp_reservations SET notes=CONCAT_WS(E'\n',notes,${note}) WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
+    case 'restapp.reservation.special_requests': { const id=n(args.reservation_id), note=s(args.requests||args.note||args.notes||args.special_request||args.details||args.text||args.message); if(!id||!note)return fail('reservation_id_and_note_required',{message:'Pasa reservation_id y el texto de la solicitud en el parámetro requests (o note).'}); const r=await db.execute(sql`UPDATE restapp_reservations SET notes=CONCAT_WS(E'\n',notes,${note}) WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
     case 'restapp.reservation.waitlist': return ok({enabled:Boolean((await getRestappSettings(teamId))?.waitlist_enabled), note:'La lista de espera persistente puede ser provista por el runtime/adaptador.'});
 
     case 'restapp.customer.identify': { const phone=s(args.phone||args.customer_phone||ctx.customerPhone); const customers=await listRestappCustomers(teamId,200); const customer=customers.find((x)=>String(x.phone||'')===phone); return customer?ok({customer}):fail('not_found'); }
@@ -181,11 +200,11 @@ async function executeLocal(teamId: number, toolId: RestappAgentToolId, args: Re
     case 'restapp.customer.update_profile': { const id=n(args.customer_id); const name=s(args.name)||null, phone=s(args.phone)||null, email=s(args.email)||null; const r=await db.execute(sql`UPDATE restapp_customers SET name=COALESCE(${name},name),phone=COALESCE(${phone},phone),email=COALESCE(${email},email),updated_at=NOW() WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
 
     case 'restapp.payment.methods': return ok({methods:(await getRestappSettings(teamId))?.payment_methods || ['cod']});
-    case 'restapp.payment.status': { const orders=await listRestappOrders(teamId,100); const o=orders.find((x)=>Number(x.id)===n(args.order_id)); return o?ok({order_id:o.id,payment_method:o.payment_method,payment_status:o.payment_status,total:o.total}):fail('not_found'); }
-    case 'restapp.payment.select': { const id=n(args.order_id), method=s(args.method||args.payment_method); if(!id||!method)return fail('order_id_and_method_required'); const r=await db.execute(sql`UPDATE restapp_orders SET payment_method=${method},updated_at=NOW() WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
-    case 'restapp.payment.confirm_transfer': { const id=n(args.order_id), reference=s(args.reference); const r=await db.execute(sql`UPDATE restapp_orders SET payment_status='paid',notes=CONCAT_WS(E'\n',notes,${reference?`Transferencia: ${reference}`:'Transferencia confirmada'}),updated_at=NOW() WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
+    case 'restapp.payment.status': { const id=await resolveOrderId(teamId,args); if(!id)return fail('order_id_or_number_required'); const orders=await listRestappOrders(teamId,100); const o=orders.find((x)=>Number(x.id)===id); return o?ok({order_id:o.id,payment_method:o.payment_method,payment_status:o.payment_status,total:o.total}):fail('not_found'); }
+    case 'restapp.payment.select': { const id=await resolveOrderId(teamId,args), method=s(args.method||args.payment_method); if(!id||!method)return fail('order_id_or_number_and_method_required'); const r=await db.execute(sql`UPDATE restapp_orders SET payment_method=${method},updated_at=NOW() WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
+    case 'restapp.payment.confirm_transfer': { const id=await resolveOrderId(teamId,args), reference=s(args.reference); if(!id)return fail('order_id_or_number_required'); const r=await db.execute(sql`UPDATE restapp_orders SET payment_status='paid',notes=CONCAT_WS(E'\n',notes,${reference?`Transferencia: ${reference}`:'Transferencia confirmada'}),updated_at=NOW() WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
     case 'restapp.payment.tip_add':
-    case 'restapp.delivery.tip': { const id=n(args.order_id), amount=Math.max(0,n(args.amount)); const r=await db.execute(sql`UPDATE restapp_orders SET tip=${amount},total=total-${sql.raw('COALESCE(tip,0)')}+${amount},updated_at=NOW() WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
+    case 'restapp.delivery.tip': { const id=await resolveOrderId(teamId,args), amount=Math.max(0,n(args.amount)); if(!id)return fail('order_id_or_number_required'); const r=await db.execute(sql`UPDATE restapp_orders SET tip=${amount},total=total-${sql.raw('COALESCE(tip,0)')}+${amount},updated_at=NOW() WHERE team_id=${teamId} AND id=${id} RETURNING *`); return ok({result:r}); }
 
     case 'restapp.promo.daily':
     case 'restapp.promo.happy_hour':
